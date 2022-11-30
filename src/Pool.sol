@@ -2,10 +2,17 @@
 pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "./Oracle.sol";
 
 contract Pool {
+    uint256 public constant LIQUIDATION_THRESHOLD = 80;
+    uint256 public constant LIQUIDATION_CLOSE_FACTOR = 50;
+    uint256 public constant LIQUIDATION_REWARD = 5;
+    uint256 public constant MIN_HEALTH_FACTOR = 1e18;
+
     address public token0;
     address public token1;
+    Oracle public oracle;
 
     struct Vault {
         uint128 amount;
@@ -18,8 +25,10 @@ contract Pool {
     }
 
     struct UserData {
-        uint128 collateralBalance;
-        uint128 borrowBalance;
+        uint128 token0CollateralShare;
+        uint128 token1CollateralShare;
+        uint128 token0BorrowShare;
+        uint128 token1BorrowShare;
     }
 
     TokenData public token0Data;
@@ -31,9 +40,10 @@ contract Pool {
         _;
     }
 
-    constructor(address _token0, address _token1) {
+    constructor(address _token0, address _token1, address _oracle) {
         token0 = _token0;
         token1 = _token1;
+        oracle = Oracle(_oracle);
     }
 
     function toShares(Vault memory total, uint256 amount) internal pure returns (uint256 shares) {
@@ -45,6 +55,43 @@ contract Pool {
                 shares = shares + 1;
             }
         }
+    }
+
+    function getUserTotalCollateral(address user) public returns (uint256 totalInDai) {
+        UserData memory userData = users[msg.sender];
+
+        uint256 totalToken0Amount = token0Data.totalCollateral.amount + token0Data.totalborrow.amount;
+        uint256 token0Amount =
+            toAmount(totalToken0Amount, token0Data.totalCollateral.shares, userData.token0CollateralShare);
+        uint256 token0InUSDC = oracle.converttoUSD(token0, token0Amount);
+
+        uint256 totalToken1Amount = token1Data.totalCollateral.amount + token1Data.totalborrow.amount;
+        uint256 token1Amount =
+            toAmount(totalToken1Amount, token1Data.totalCollateral.shares, userData.token1CollateralShare);
+        uint256 token1InUSDC = oracle.converttoUSD(token1, token1Amount);
+        return token0InUSDC + token1InUSDC;
+    }
+
+    function getUserTotalBorrow(address user) public returns (uint256 totalInDai) {
+        UserData memory userData = users[msg.sender];
+
+        uint256 totalToken0Amount = token0Data.totalborrow.amount;
+        uint256 token0Amount = toAmount(totalToken0Amount, token0Data.totalBorrow.shares, userData.token0BorrowShare);
+        uint256 token0InUSDC = oracle.converttoUSD(token0, token0Amount);
+
+        uint256 totalToken1Amount = token1Data.totalborrow.amount;
+        uint256 token1Amount = toAmount(totalToken1Amount, token1Data.totalBorrow.shares, userData.token1BorrowShare);
+        uint256 token1InUSDC = oracle.converttoUSD(token1, token1Amount);
+        return token0InUSDC + token1InUSDC;
+    }
+
+    function healthFactor(address user) returns (uint256) {
+        uint256 userTotalCollateral = getUserTotalCollateral(user);
+        uint256 userTotalBorrow = getUserTotalBorrow(user);
+
+        if (userTotalBorrow == 0) return 100e18;
+
+        return (((userTotalCollateral * LIQUIDATION_THRESHOLD) / 100) * 1e18) / userTotalBorrow;
     }
 
     function toShares(uint256 totalShares, uint256 totalAmount, uint256 amount)
@@ -101,19 +148,27 @@ contract Pool {
         tokenData.totalCollateral.shares = tokenData.totalCollateral.shares + uint128(inShare);
         tokenData.totalCollateral.amount = tokenData.totalCollateral.amount + uint128(amount);
         UserData storage userData = users[msg.sender];
-        userData.collateralBalance = userData.collateralBalance + uint128(inShare);
     }
 
     function redeem(address token, uint256 shareAmount) external _tokenExist(token) {
         require(shareAmount > 0, "Invalid shares");
         UserData storage userData = users[msg.sender];
-        require(userData.collateralBalance >= shareAmount, "Low collateral Balance");
+        if (token == token0) {
+            require(userData.token0CollateralShare >= shareAmount, "Low collateral Balance");
+        } else {
+            require(userData.token1CollateralShare >= shareAmount, "Low collateral Balance");
+        }
         TokenData storage tokenData = (token == token0) ? token0Data : token1Data;
         uint256 totalAmount = tokenData.totalCollateral.amount + tokenData.totalborrow.amount;
         uint256 amount = toAmount(totalAmount, tokenData.totalCollateral.shares, shareAmount);
         IERC20(token).transfer(msg.sender, amount);
         tokenData.totalCollateral.shares = tokenData.totalCollateral.shares - uint128(shareAmount);
         tokenData.totalCollateral.amount = tokenData.totalCollateral.amount - uint128(amount);
-        userData.collateralBalance = userData.collateralBalance - uint128(shareAmount);
+        if (token == token0) {
+            userData.token0CollateralShare = userData.token0CollateralShare - uint128(shareAmount);
+        } else {
+            userData.token1CollateralShare = userData.token1CollateralShare - uint128(shareAmount);
+        }
+        require(healthFactor(msg.sender) >= MIN_HEALTH_FACTOR, "Undercollateralized");
     }
 }
