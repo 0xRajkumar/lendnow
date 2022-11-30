@@ -58,6 +58,10 @@ contract Pool {
         }
     }
 
+    function userCollateralShares(address user) public view returns (uint256) {
+        return users[msg.sender].collateralBalance;
+    }
+
     function lend(address token, uint256 amount) external _tokenExist(token) {
         require(amount > 0, "Invalid amount");
         TokenData storage tokenData = (token == token0) ? token0Data : token1Data;
@@ -69,7 +73,15 @@ contract Pool {
         userData.collateralBalance = userData.collateralBalance + uint128(inShare);
     }
 
-    function userCollateralShares(address user) public view returns (uint256) {
-        return users[msg.sender].collateralBalance;
+    function redeem(address token, uint256 shareAmount) external _tokenExist(token) {
+        require(shareAmount > 0, "Invalid shares");
+        UserData storage userData = users[msg.sender];
+        require(userData.collateralBalance >= shareAmount, "Low collateral Balance");
+        TokenData storage tokenData = (token == token0) ? token0Data : token1Data;
+        uint256 amount = toAmount(tokenData.totalCollateral, shareAmount);
+        IERC20(token).transfer(msg.sender, amount);
+        tokenData.totalCollateral.shares = tokenData.totalCollateral.shares - uint128(shareAmount);
+        tokenData.totalCollateral.amount = tokenData.totalCollateral.amount - uint128(amount);
+        userData.collateralBalance = userData.collateralBalance - uint128(shareAmount);
     }
 }
