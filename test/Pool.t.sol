@@ -13,6 +13,8 @@ contract PoolTest is Test {
     ERC20Mock token1;
     Pool pool;
     Oracle oracle;
+    //Tester
+    address tester = address(0x1);
 
     struct UserData {
         uint128 collateralBalance;
@@ -20,8 +22,8 @@ contract PoolTest is Test {
     }
 
     function setUp() public {
-        token0 = new ERC20Mock("Wrapped Ether","WETH",1000 ether);
-        token1 = new ERC20Mock("Dai","DAI",1000 ether);
+        token0 = new ERC20Mock("Wrapped Ether","WETH",100_000 ether);
+        token1 = new ERC20Mock("Dai","DAI",100_000 ether);
         address[] memory tokens = new address[](2);
         uint256[] memory prices = new uint[](2);
         for (uint256 i = 0; i < 2; i++) {
@@ -35,6 +37,7 @@ contract PoolTest is Test {
         }
         oracle = new Oracle(tokens,prices);
         pool = new Pool(address(token0),address(token1),address(oracle));
+        token1.transfer(tester, 1000 ether);
     }
 
     function testLend() public {
@@ -56,10 +59,13 @@ contract PoolTest is Test {
         assertEq(token0CollateralSharesAfter, token0CollateralSharesBefore - 100 ether);
     }
 
-    function testHealthFactor() public {
+    function testBorrow() public {
         token0.approve(address(pool), 1000 ether);
         pool.lend(address(token0), 1000 ether);
-        uint256 health = pool.healthFactor(address(this));
-        emit log_named_uint("health", health / 1e18);
+        vm.startPrank(tester);
+        token1.approve(address(pool), 1000 ether);
+        pool.lend(address(token1), 1000 ether);
+        //Taking 0.8 ETH in borrow why? becouse we can take 80% only and 80% is 0.8 ETH becouse 1 ETH is of 1000$ and we have lended 1000$
+        pool.borrow(address(token0), 1e18 / 10);
     }
 }

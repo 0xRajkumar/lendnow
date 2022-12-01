@@ -2,6 +2,7 @@
 pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "forge-std/console.sol";
 import "./Oracle.sol";
 
 contract Pool {
@@ -77,9 +78,7 @@ contract Pool {
     function healthFactor(address user) public returns (uint256) {
         uint256 userTotalCollateral = getUserTotalCollateral(user);
         uint256 usertotalBorrow = getUsertotalBorrow(user);
-
         if (usertotalBorrow == 0) return 100e18;
-
         return (((userTotalCollateral * LIQUIDATION_THRESHOLD) / 100) * 1e18) / usertotalBorrow;
     }
 
@@ -154,5 +153,22 @@ contract Pool {
             userData.token1CollateralShare = userData.token1CollateralShare - uint128(shareAmount);
         }
         require(healthFactor(msg.sender) >= MIN_HEALTH_FACTOR, "Undercollateralized");
+    }
+
+    function borrow(address token, uint256 amount) external _tokenExist(token) {
+        require(amount > 0, "Invalid amount");
+        TokenData storage tokenData = (token == token0) ? token0Data : token1Data;
+        require(tokenData.totalCollateral.amount >= amount, "Amount too high");
+        UserData storage userData = users[msg.sender];
+        uint256 inShare = toShares(tokenData.totalBorrow.shares, tokenData.totalBorrow.amount, amount);
+        tokenData.totalBorrow.amount = tokenData.totalBorrow.amount + uint128(amount);
+        tokenData.totalBorrow.shares = tokenData.totalBorrow.shares + uint128(amount);
+        if (token == token0) {
+            userData.token0BorrowShare = userData.token0BorrowShare + uint128(inShare);
+        } else {
+            userData.token1BorrowShare = userData.token1BorrowShare + uint128(inShare);
+        }
+        require(healthFactor(msg.sender) >= MIN_HEALTH_FACTOR, "Undercollateralized");
+        IERC20(token).transfer(msg.sender, amount);
     }
 }

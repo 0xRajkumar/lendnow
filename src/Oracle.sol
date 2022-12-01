@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
+import "forge-std/console.sol";
+
 contract Oracle {
     mapping(address => uint256) public PriceInUSDC;
 
