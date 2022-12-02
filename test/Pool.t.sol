@@ -66,6 +66,6 @@ contract PoolTest is Test {
         token1.approve(address(pool), 1000 ether);
         pool.lend(address(token1), 1000 ether);
         //Taking 0.8 ETH in borrow why? becouse we can take 80% only and 80% is 0.8 ETH becouse 1 ETH is of 1000$ and we have lended 1000$
-        pool.borrow(address(token0), 1e18 / 10);
+        pool.borrow(address(token0), 1e18 / 10 * 8);
     }
 }
