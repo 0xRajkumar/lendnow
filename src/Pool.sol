@@ -171,4 +171,25 @@ contract Pool {
         require(healthFactor(msg.sender) >= MIN_HEALTH_FACTOR, "Undercollateralized");
         IERC20(token).transfer(msg.sender, amount);
     }
+
+    function repay(address token, uint256 shareAmount) external _tokenExist(token) {
+        require(shareAmount > 0, "Invalid shares");
+        UserData storage userData = users[msg.sender];
+        if (token == token0) {
+            require(userData.token0BorrowShare >= shareAmount, "Invalid share amount");
+        } else {
+            require(userData.token1BorrowShare >= shareAmount, "Invalid share amount");
+        }
+        TokenData storage tokenData = (token == token0) ? token0Data : token1Data;
+        uint256 totalAmount = tokenData.totalBorrow.amount;
+        uint256 amount = toAmount(totalAmount, tokenData.totalBorrow.shares, shareAmount);
+        IERC20(token).transferFrom(msg.sender, address(this), amount);
+        tokenData.totalBorrow.shares = tokenData.totalBorrow.shares - uint128(shareAmount);
+        tokenData.totalBorrow.amount = tokenData.totalBorrow.amount - uint128(amount);
+        if (token == token0) {
+            userData.token0BorrowShare = userData.token0BorrowShare - uint128(shareAmount);
+        } else {
+            userData.token1BorrowShare = userData.token1BorrowShare - uint128(shareAmount);
+        }
+    }
 }

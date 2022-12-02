@@ -68,4 +68,29 @@ contract PoolTest is Test {
         //Taking 0.8 ETH in borrow why? becouse we can take 80% only and 80% is 0.8 ETH becouse 1 ETH is of 1000$ and we have lended 1000$
         pool.borrow(address(token0), 1e18 / 10 * 8);
     }
+
+    function testUndercollateralizedRevert() public {
+        token0.approve(address(pool), 1000 ether);
+        pool.lend(address(token0), 1000 ether);
+        vm.startPrank(tester);
+        token1.approve(address(pool), 1000 ether);
+        pool.lend(address(token1), 1000 ether);
+        //It should revert on 0.8 + 1wei
+        vm.expectRevert(bytes("Undercollateralized"));
+        pool.borrow(address(token0), 1e18 / 10 * 8 + 1);
+    }
+
+    function testRepay() public {
+        token0.approve(address(pool), 1000 ether);
+        pool.lend(address(token0), 1000 ether);
+        vm.startPrank(tester);
+        token1.approve(address(pool), 1000 ether);
+        pool.lend(address(token1), 1000 ether);
+        pool.borrow(address(token0), 1e18 / 10 * 8);
+        uint256 healthFactorBefore = pool.healthFactor(tester);
+        token0.approve(address(pool), type(uint256).max);
+        pool.repay(address(token0), 1e18 / 10 * 8);
+        uint256 healthFactorAfter = pool.healthFactor(tester);
+        assertGt(healthFactorAfter, healthFactorBefore);
+    }
 }
