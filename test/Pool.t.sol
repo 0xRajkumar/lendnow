@@ -93,4 +93,19 @@ contract PoolTest is Test {
         uint256 healthFactorAfter = pool.healthFactor(tester);
         assertGt(healthFactorAfter, healthFactorBefore);
     }
+
+    function testLiquidate() public {
+        token0.approve(address(pool), 100000 ether);
+        pool.lend(address(token0), 1000 ether);
+        vm.startPrank(tester);
+        token1.approve(address(pool), 1000 ether);
+        pool.lend(address(token1), 1000 ether);
+        pool.borrow(address(token0), 1e18 / 10 * 8);
+        oracle.setPrice(address(token0), 1001);
+        emit log_named_uint("Health is ", pool.healthFactor(tester));
+        vm.stopPrank();
+        pool.liquidate(tester, address(token0), 1e18 / 10 * 8);
+        uint256 totalToken1AsCollateral = pool.getUserTotalCollateral(tester);
+        assertLe(totalToken1AsCollateral, 160 ether);
+    }
 }

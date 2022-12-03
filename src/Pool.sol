@@ -7,7 +7,6 @@ import "./Oracle.sol";
 
 contract Pool {
     uint256 public constant LIQUIDATION_THRESHOLD = 80;
-    uint256 public constant LIQUIDATION_CLOSE_FACTOR = 50;
     uint256 public constant LIQUIDATION_REWARD = 5;
     uint256 public constant MIN_HEALTH_FACTOR = 1e18;
 
@@ -48,7 +47,7 @@ contract Pool {
     }
 
     function getUserTotalCollateral(address user) public returns (uint256 totalInDai) {
-        UserData memory userData = users[msg.sender];
+        UserData memory userData = users[user];
 
         uint256 totalToken0Amount = token0Data.totalCollateral.amount + token0Data.totalBorrow.amount;
         uint256 token0Amount =
@@ -63,7 +62,7 @@ contract Pool {
     }
 
     function getUsertotalBorrow(address user) public returns (uint256 totalInDai) {
-        UserData memory userData = users[msg.sender];
+        UserData memory userData = users[user];
 
         uint256 totalToken0Amount = token0Data.totalBorrow.amount;
         uint256 token0Amount = toAmount(totalToken0Amount, token0Data.totalBorrow.shares, userData.token0BorrowShare);
@@ -191,5 +190,37 @@ contract Pool {
         } else {
             userData.token1BorrowShare = userData.token1BorrowShare - uint128(shareAmount);
         }
+    }
+
+    function liquidate(address to, address debtAsset, uint256 debtToCover) external _tokenExist(debtAsset) {
+        require(healthFactor(to) < MIN_HEALTH_FACTOR, "Borrower is solvant");
+        UserData storage userData = users[to];
+
+        if (token0 == debtAsset) {
+            uint256 shares;
+            uint256 userDebtAmount =
+                toAmount(token0Data.totalBorrow.amount, token0Data.totalBorrow.shares, userData.token0BorrowShare);
+            if (debtToCover >= userDebtAmount) {
+                debtToCover = userDebtAmount;
+                shares = userData.token0BorrowShare;
+            } else {
+                uint256 shares = toShares(token0Data.totalBorrow.shares, token0Data.totalBorrow.amount, debtToCover);
+            }
+            IERC20(token0).transferFrom(msg.sender, address(this), debtToCover);
+            token0Data.totalBorrow.amount = token0Data.totalBorrow.amount - uint128(debtToCover);
+            token0Data.totalBorrow.shares = token0Data.totalBorrow.shares - uint128(shares);
+            userData.token0BorrowShare = userData.token0BorrowShare - uint128(shares);
+            uint256 debtInUSDC = oracle.converttoUSD(token0, debtToCover);
+            uint256 rewardInUSDC = (debtInUSDC * LIQUIDATION_REWARD) / 100;
+            uint256 totalUSDCToPay = debtInUSDC + rewardInUSDC;
+            uint256 token1Price = oracle.PriceInUSDC(token1);
+            uint256 token1Amount = (totalUSDCToPay) / token1Price;
+            uint256 minusFromUser =
+                toShares(token1Data.totalCollateral.shares, token1Data.totalCollateral.amount, token1Amount);
+            userData.token1CollateralShare -= uint128(minusFromUser);
+            token1Data.totalCollateral.shares -= uint128(minusFromUser);
+            token1Data.totalCollateral.amount -= uint128(token1Amount);
+            IERC20(token1).transfer(msg.sender, token1Amount);
+        } else {}
     }
 }
