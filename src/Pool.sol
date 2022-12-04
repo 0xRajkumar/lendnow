@@ -221,6 +221,31 @@ contract Pool {
             token1Data.totalCollateral.shares -= uint128(minusFromUser);
             token1Data.totalCollateral.amount -= uint128(token1Amount);
             IERC20(token1).transfer(msg.sender, token1Amount);
-        } else {}
+        } else {
+            uint256 shares;
+            uint256 userDebtAmount =
+                toAmount(token1Data.totalBorrow.amount, token1Data.totalBorrow.shares, userData.token1BorrowShare);
+            if (debtToCover >= userDebtAmount) {
+                debtToCover = userDebtAmount;
+                shares = userData.token1BorrowShare;
+            } else {
+                uint256 shares = toShares(token1Data.totalBorrow.shares, token1Data.totalBorrow.amount, debtToCover);
+            }
+            IERC20(token1).transferFrom(msg.sender, address(this), debtToCover);
+            token1Data.totalBorrow.amount = token1Data.totalBorrow.amount - uint128(debtToCover);
+            token1Data.totalBorrow.shares = token1Data.totalBorrow.shares - uint128(shares);
+            userData.token1BorrowShare = userData.token1BorrowShare - uint128(shares);
+            uint256 debtInUSDC = oracle.converttoUSD(token1, debtToCover);
+            uint256 rewardInUSDC = (debtInUSDC * LIQUIDATION_REWARD) / 100;
+            uint256 totalUSDCToPay = debtInUSDC + rewardInUSDC;
+            uint256 token0Price = oracle.PriceInUSDC(token0);
+            uint256 token0Amount = (totalUSDCToPay) / token0Price;
+            uint256 minusFromUser =
+                toShares(token0Data.totalCollateral.shares, token0Data.totalCollateral.amount, token0Amount);
+            userData.token0CollateralShare -= uint128(minusFromUser);
+            token0Data.totalCollateral.shares -= uint128(minusFromUser);
+            token0Data.totalCollateral.amount -= uint128(token0Amount);
+            IERC20(token0).transfer(msg.sender, token0Amount);
+        }
     }
 }
