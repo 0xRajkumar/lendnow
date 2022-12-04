@@ -9,7 +9,7 @@ contract Pool {
     uint256 public constant LIQUIDATION_THRESHOLD = 80;
     uint256 public constant LIQUIDATION_REWARD = 5;
     uint256 public constant MIN_HEALTH_FACTOR = 1e18;
-
+    uint256 public lastBlock;
     address public token0;
     address public token1;
     Oracle public oracle;
@@ -117,6 +117,7 @@ contract Pool {
     }
 
     function lend(address token, uint256 amount) external _tokenExist(token) {
+        accrueInterest();
         require(amount > 0, "Invalid amount");
         TokenData storage tokenData = (token == token0) ? token0Data : token1Data;
         IERC20(token).transferFrom(msg.sender, address(this), amount);
@@ -133,6 +134,8 @@ contract Pool {
     }
 
     function redeem(address token, uint256 shareAmount) external _tokenExist(token) {
+        accrueInterest();
+
         require(shareAmount > 0, "Invalid shares");
         UserData storage userData = users[msg.sender];
         if (token == token0) {
@@ -155,6 +158,7 @@ contract Pool {
     }
 
     function borrow(address token, uint256 amount) external _tokenExist(token) {
+        accrueInterest();
         require(amount > 0, "Invalid amount");
         TokenData storage tokenData = (token == token0) ? token0Data : token1Data;
         require(tokenData.totalCollateral.amount >= amount, "Amount too high");
@@ -172,6 +176,7 @@ contract Pool {
     }
 
     function repay(address token, uint256 shareAmount) external _tokenExist(token) {
+        accrueInterest();
         require(shareAmount > 0, "Invalid shares");
         UserData storage userData = users[msg.sender];
         if (token == token0) {
@@ -193,6 +198,7 @@ contract Pool {
     }
 
     function liquidate(address to, address debtAsset, uint256 debtToCover) external _tokenExist(debtAsset) {
+        accrueInterest();
         require(healthFactor(to) < MIN_HEALTH_FACTOR, "Borrower is solvant");
         UserData storage userData = users[to];
 
@@ -246,6 +252,41 @@ contract Pool {
             token0Data.totalCollateral.shares -= uint128(minusFromUser);
             token0Data.totalCollateral.amount -= uint128(token0Amount);
             IERC20(token0).transfer(msg.sender, token0Amount);
+        }
+    }
+
+    function getInterestRate(uint256 totalBorrow, uint256 totalCollateral) public {
+        uint256 utilizationRate;
+        if (totalBorrow > 0) {
+            utilizationRate = (totalBorrow * 1 ether) / totalCollateral;
+        }
+        //Optimal Utilization is one
+        //Base Rate is 10
+        //30 is Depend on utilization if it's 1 then it will 30 and total will be 40
+        uint256 apy = 10 + utilizationRate * 30;
+        //15 SECONDS = 1 Block
+        //1 Year = 2102400 Block
+        return apy / 2102400;
+    }
+
+    function calculateInterest(uint256 principal, uint256 rate, uint256 numOfBlock) internal pure returns (uint256) {
+        return (principal * rate * numOfBlock) / (10 ** 20);
+    }
+
+    function accrueInterest() public {
+        uint256 remainingBlocks = block.number - lastBlock;
+        if (remainingBlocks > 0) {
+            uint256 interestRateForToken0 = getInterestRate(
+                token0Data.totalBorrow.amount, token0Data.totalCollateral.amount + token0Data.totalBorrow.amount
+            );
+            token0Data.totalBorrow.amount +=
+                calculateInterest(token0Data.totalBorrow.amount, interestRateForToken0, remainingBlocks);
+            uint256 interestRateForToken1 = getInterestRate(
+                token1Data.totalBorrow.amount, token1Data.totalCollateral.amount + token1Data.totalBorrow.amount
+            );
+            token1Data.totalBorrow.amount +=
+                calculateInterest(token1Data.totalBorrow.amount, interestRateForToken1, remainingBlocks);
+            lastBlock = block.number;
         }
     }
 }
