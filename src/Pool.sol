@@ -6,13 +6,27 @@ import "forge-std/console.sol";
 import "./Oracle.sol";
 
 contract Pool {
-    uint256 public constant LIQUIDATION_THRESHOLD = 80;
-    uint256 public constant LIQUIDATION_REWARD = 5;
+    /**
+     * VARIABLES
+     */
+
+    uint128 public constant LIQUIDATION_THRESHOLD = 80;
+    uint128 public constant LIQUIDATION_REWARD = 5;
     uint256 public constant MIN_HEALTH_FACTOR = 1e18;
+
     uint256 public lastBlock;
+
     address public token0;
     address public token1;
+
+    TokenData public token0Data;
+    TokenData public token1Data;
+
     Oracle public oracle;
+
+    /**
+     * STRUCTS
+     */
 
     struct Vault {
         uint128 amount;
@@ -31,14 +45,36 @@ contract Pool {
         uint128 token1BorrowShare;
     }
 
-    TokenData public token0Data;
-    TokenData public token1Data;
+    /**
+     * MAPPINGS
+     */
+
     mapping(address => UserData) public users;
 
-    modifier _tokenExist(address token) {
-        require(token == token0 || token == token1);
+    /**
+     * MODIFIERS
+     */
+
+    modifier tokenExist(address token) {
+        if (token != token0 && token != token1) revert TokenNotSupported();
         _;
     }
+
+    modifier notZero(uint256 amount) {
+        if (amount == 0) revert InvalidAmount();
+        _;
+    }
+
+    /**
+     * ERRORS
+     */
+
+    error TokenNotSupported();
+    error InvalidAmount();
+
+    /**
+     * MAIN FUNCTIONS
+     */
 
     constructor(address _token0, address _token1, address _oracle) {
         token0 = _token0;
@@ -46,79 +82,8 @@ contract Pool {
         oracle = Oracle(_oracle);
     }
 
-    function getUserTotalCollateral(address user) public returns (uint256 totalInDai) {
-        UserData memory userData = users[user];
-
-        uint256 totalToken0Amount = token0Data.totalCollateral.amount + token0Data.totalBorrow.amount;
-        uint256 token0Amount =
-            toAmount(totalToken0Amount, token0Data.totalCollateral.shares, userData.token0CollateralShare);
-        uint256 token0InUSDC = oracle.converttoUSD(token0, token0Amount);
-
-        uint256 totalToken1Amount = token1Data.totalCollateral.amount + token1Data.totalBorrow.amount;
-        uint256 token1Amount =
-            toAmount(totalToken1Amount, token1Data.totalCollateral.shares, userData.token1CollateralShare);
-        uint256 token1InUSDC = oracle.converttoUSD(token1, token1Amount);
-        return token0InUSDC + token1InUSDC;
-    }
-
-    function getUsertotalBorrow(address user) public returns (uint256 totalInDai) {
-        UserData memory userData = users[user];
-
-        uint256 totalToken0Amount = token0Data.totalBorrow.amount;
-        uint256 token0Amount = toAmount(totalToken0Amount, token0Data.totalBorrow.shares, userData.token0BorrowShare);
-        uint256 token0InUSDC = oracle.converttoUSD(token0, token0Amount);
-
-        uint256 totalToken1Amount = token1Data.totalBorrow.amount;
-        uint256 token1Amount = toAmount(totalToken1Amount, token1Data.totalBorrow.shares, userData.token1BorrowShare);
-        uint256 token1InUSDC = oracle.converttoUSD(token1, token1Amount);
-        return token0InUSDC + token1InUSDC;
-    }
-
-    function healthFactor(address user) public returns (uint256) {
-        uint256 userTotalCollateral = getUserTotalCollateral(user);
-        uint256 usertotalBorrow = getUsertotalBorrow(user);
-        if (usertotalBorrow == 0) return 100e18;
-        return (((userTotalCollateral * LIQUIDATION_THRESHOLD) / 100) * 1e18) / usertotalBorrow;
-    }
-
-    function toShares(uint256 totalShares, uint256 totalAmount, uint256 amount)
-        internal
-        pure
-        returns (uint256 shares)
-    {
-        if (totalAmount == 0) {
-            shares = amount;
-        } else {
-            shares = (amount * totalShares) / totalAmount;
-            if ((shares * totalAmount) / totalShares < amount) {
-                shares = shares + 1;
-            }
-        }
-    }
-
-    function toAmount(uint256 totalAmount, uint256 totalShares, uint256 shares)
-        internal
-        pure
-        returns (uint256 amount)
-    {
-        if (totalShares == 0) {
-            amount = shares;
-        } else {
-            amount = (shares * totalAmount) / totalShares;
-            if ((amount * totalShares) / totalAmount < shares) {
-                amount = amount + 1;
-            }
-        }
-    }
-
-    function userCollateralShares(address user) public view returns (uint256, uint256) {
-        UserData memory userData = users[msg.sender];
-        return (userData.token0CollateralShare, userData.token1CollateralShare);
-    }
-
-    function lend(address token, uint256 amount) external _tokenExist(token) {
+    function lend(address token, uint256 amount) external tokenExist(token) notZero(amount) {
         accrueInterest();
-        require(amount > 0, "Invalid amount");
         TokenData storage tokenData = (token == token0) ? token0Data : token1Data;
         IERC20(token).transferFrom(msg.sender, address(this), amount);
         uint256 totalAmount = tokenData.totalCollateral.amount + tokenData.totalBorrow.amount;
@@ -133,10 +98,8 @@ contract Pool {
         }
     }
 
-    function redeem(address token, uint256 shareAmount) external _tokenExist(token) {
+    function redeem(address token, uint256 shareAmount) external tokenExist(token) notZero(shareAmount) {
         accrueInterest();
-
-        require(shareAmount > 0, "Invalid shares");
         UserData storage userData = users[msg.sender];
         if (token == token0) {
             require(userData.token0CollateralShare >= shareAmount, "Low collateral Balance");
@@ -154,12 +117,11 @@ contract Pool {
         } else {
             userData.token1CollateralShare = userData.token1CollateralShare - uint128(shareAmount);
         }
-        require(healthFactor(msg.sender) >= MIN_HEALTH_FACTOR, "Undercollateralized");
+        require(getHealthFactor(msg.sender) >= MIN_HEALTH_FACTOR, "Undercollateralized");
     }
 
-    function borrow(address token, uint256 amount) external _tokenExist(token) {
+    function borrow(address token, uint256 amount) external tokenExist(token) notZero(amount) {
         accrueInterest();
-        require(amount > 0, "Invalid amount");
         TokenData storage tokenData = (token == token0) ? token0Data : token1Data;
         require(tokenData.totalCollateral.amount >= amount, "Amount too high");
         UserData storage userData = users[msg.sender];
@@ -171,13 +133,12 @@ contract Pool {
         } else {
             userData.token1BorrowShare = userData.token1BorrowShare + uint128(inShare);
         }
-        require(healthFactor(msg.sender) >= MIN_HEALTH_FACTOR, "Undercollateralized");
+        require(getHealthFactor(msg.sender) >= MIN_HEALTH_FACTOR, "Undercollateralized");
         IERC20(token).transfer(msg.sender, amount);
     }
 
-    function repay(address token, uint256 shareAmount) external _tokenExist(token) {
+    function repay(address token, uint256 shareAmount) external tokenExist(token) notZero(shareAmount) {
         accrueInterest();
-        require(shareAmount > 0, "Invalid shares");
         UserData storage userData = users[msg.sender];
         if (token == token0) {
             require(userData.token0BorrowShare >= shareAmount, "Invalid share amount");
@@ -197,9 +158,13 @@ contract Pool {
         }
     }
 
-    function liquidate(address to, address debtAsset, uint256 debtToCover) external _tokenExist(debtAsset) {
+    function liquidate(address to, address debtAsset, uint256 debtToCover)
+        external
+        tokenExist(debtAsset)
+        notZero(debtToCover)
+    {
         accrueInterest();
-        require(healthFactor(to) < MIN_HEALTH_FACTOR, "Borrower is solvant");
+        require(getHealthFactor(to) < MIN_HEALTH_FACTOR, "Borrower is solvant");
         UserData storage userData = users[to];
 
         if (token0 == debtAsset) {
@@ -255,7 +220,76 @@ contract Pool {
         }
     }
 
-    function getInterestRate(uint256 totalBorrow, uint256 totalCollateral) public {
+    function accrueInterest() public {
+        uint256 remainingBlocks = block.number - lastBlock;
+        if (remainingBlocks > 0) {
+            uint256 interestRateForToken0 = getInterestRate(
+                token0Data.totalBorrow.amount, token0Data.totalCollateral.amount + token0Data.totalBorrow.amount
+            );
+            token0Data.totalBorrow.amount +=
+                uint128(calculateInterest(token0Data.totalBorrow.amount, interestRateForToken0, remainingBlocks));
+            uint256 interestRateForToken1 = getInterestRate(
+                token1Data.totalBorrow.amount, token1Data.totalCollateral.amount + token1Data.totalBorrow.amount
+            );
+            token1Data.totalBorrow.amount +=
+                uint128(calculateInterest(token1Data.totalBorrow.amount, interestRateForToken1, remainingBlocks));
+            lastBlock = block.number;
+        }
+    }
+
+    /**
+     * Helper functions
+     */
+
+    function toShares(uint256 totalShares, uint256 totalAmount, uint256 amount)
+        internal
+        pure
+        returns (uint256 shares)
+    {
+        if (totalAmount == 0) {
+            shares = amount;
+        } else {
+            shares = (amount * totalShares) / totalAmount;
+            if ((shares * totalAmount) / totalShares < amount) {
+                shares = shares + 1;
+            }
+        }
+    }
+
+    function toAmount(uint256 totalAmount, uint256 totalShares, uint256 shares)
+        internal
+        pure
+        returns (uint256 amount)
+    {
+        if (totalShares == 0) {
+            amount = shares;
+        } else {
+            amount = (shares * totalAmount) / totalShares;
+            if ((amount * totalShares) / totalAmount < shares) {
+                amount = amount + 1;
+            }
+        }
+    }
+
+    function calculateInterest(uint256 principal, uint256 rate, uint256 numOfBlock) internal pure returns (uint256) {
+        return (principal * rate * numOfBlock) / (10 ** 20);
+    }
+
+    /**
+     * Getter funtions
+     */
+
+    function getUserCollateralShares(address user) public view returns (uint256, uint256) {
+        UserData memory userData = users[msg.sender];
+        return (userData.token0CollateralShare, userData.token1CollateralShare);
+    }
+
+    function getUserBorrowShares(address user) public view returns (uint256, uint256) {
+        UserData memory userData = users[msg.sender];
+        return (userData.token0BorrowShare, userData.token1BorrowShare);
+    }
+
+    function getInterestRate(uint256 totalBorrow, uint256 totalCollateral) public view returns (uint256) {
         uint256 utilizationRate;
         if (totalBorrow > 0) {
             utilizationRate = (totalBorrow * 1 ether) / totalCollateral;
@@ -269,24 +303,38 @@ contract Pool {
         return apy / 2102400;
     }
 
-    function calculateInterest(uint256 principal, uint256 rate, uint256 numOfBlock) internal pure returns (uint256) {
-        return (principal * rate * numOfBlock) / (10 ** 20);
+    function getUserTotalCollateral(address user) public view returns (uint256 totalInDai) {
+        UserData memory userData = users[user];
+
+        uint256 totalToken0Amount = token0Data.totalCollateral.amount + token0Data.totalBorrow.amount;
+        uint256 token0Amount =
+            toAmount(totalToken0Amount, token0Data.totalCollateral.shares, userData.token0CollateralShare);
+        uint256 token0InUSDC = oracle.converttoUSD(token0, token0Amount);
+
+        uint256 totalToken1Amount = token1Data.totalCollateral.amount + token1Data.totalBorrow.amount;
+        uint256 token1Amount =
+            toAmount(totalToken1Amount, token1Data.totalCollateral.shares, userData.token1CollateralShare);
+        uint256 token1InUSDC = oracle.converttoUSD(token1, token1Amount);
+        return token0InUSDC + token1InUSDC;
     }
 
-    function accrueInterest() public {
-        uint256 remainingBlocks = block.number - lastBlock;
-        if (remainingBlocks > 0) {
-            uint256 interestRateForToken0 = getInterestRate(
-                token0Data.totalBorrow.amount, token0Data.totalCollateral.amount + token0Data.totalBorrow.amount
-            );
-            token0Data.totalBorrow.amount +=
-                calculateInterest(token0Data.totalBorrow.amount, interestRateForToken0, remainingBlocks);
-            uint256 interestRateForToken1 = getInterestRate(
-                token1Data.totalBorrow.amount, token1Data.totalCollateral.amount + token1Data.totalBorrow.amount
-            );
-            token1Data.totalBorrow.amount +=
-                calculateInterest(token1Data.totalBorrow.amount, interestRateForToken1, remainingBlocks);
-            lastBlock = block.number;
-        }
+    function getUsertotalBorrow(address user) public view returns (uint256 totalInDai) {
+        UserData memory userData = users[user];
+
+        uint256 totalToken0Amount = token0Data.totalBorrow.amount;
+        uint256 token0Amount = toAmount(totalToken0Amount, token0Data.totalBorrow.shares, userData.token0BorrowShare);
+        uint256 token0InUSDC = oracle.converttoUSD(token0, token0Amount);
+
+        uint256 totalToken1Amount = token1Data.totalBorrow.amount;
+        uint256 token1Amount = toAmount(totalToken1Amount, token1Data.totalBorrow.shares, userData.token1BorrowShare);
+        uint256 token1InUSDC = oracle.converttoUSD(token1, token1Amount);
+        return token0InUSDC + token1InUSDC;
+    }
+
+    function getHealthFactor(address user) public view returns (uint256) {
+        uint256 userTotalCollateral = getUserTotalCollateral(user);
+        uint256 usertotalBorrow = getUsertotalBorrow(user);
+        if (usertotalBorrow == 0) return 100e18;
+        return (((userTotalCollateral * LIQUIDATION_THRESHOLD) / 100) * 1e18) / usertotalBorrow;
     }
 }
