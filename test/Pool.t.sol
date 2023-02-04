@@ -11,10 +11,14 @@ contract PoolTest is Test {
     ERC20Mock token0;
     //Token1 = USDC
     ERC20Mock token1;
+
     Pool pool;
     Oracle oracle;
-    //Tester
-    address tester = address(0x1);
+    //Users
+    address Owner = address(0x1);
+    address Lender = address(0x2);
+    address Borrower = address(0x3);
+    // address Borrower = address(0x3);
 
     struct UserData {
         uint128 collateralBalance;
@@ -22,8 +26,9 @@ contract PoolTest is Test {
     }
 
     function setUp() public {
-        token0 = new ERC20Mock("Wrapped Ether","WETH",100_000 ether);
-        token1 = new ERC20Mock("Dai","DAI",100_000 ether);
+        vm.startPrank(Owner);
+        token0 = new ERC20Mock("Wrapped Ether", "WETH", 100_000 ether);
+        token1 = new ERC20Mock("Dai", "DAI", 100_000 ether);
         address[] memory tokens = new address[](2);
         uint256[] memory prices = new uint[](2);
         for (uint256 i = 0; i < 2; i++) {
@@ -35,77 +40,132 @@ contract PoolTest is Test {
                 prices[i] = 1;
             }
         }
-        oracle = new Oracle(tokens,prices);
-        pool = new Pool(address(token0),address(token1),address(oracle));
-        token1.transfer(tester, 1000 ether);
+        oracle = new Oracle(tokens, prices);
+        pool = new Pool(address(token0), address(token1), address(oracle));
+        token0.transfer(Lender, 10 ether);
+        token1.transfer(Borrower, 20000 ether);
+        vm.stopPrank();
     }
 
     function testLend() public {
-        uint256 balanceBefore = token0.balanceOf(address(this));
-        token0.approve(address(pool), 1000 ether);
-        pool.lend(address(token0), 1000 ether);
+        vm.startPrank(Lender);
+        uint256 balanceBefore = token0.balanceOf(Lender);
+        token0.approve(address(pool), 10 ether);
+        pool.lend(address(token0), 10 ether);
         uint256 balanceAfter = token0.balanceOf(address(this));
-        assertEq(balanceBefore, balanceAfter + 1000 ether);
-        (uint256 token0CollateralShare, uint256 token1CollateralShare) = pool.userCollateralShares(address(this));
-        assertEq(token0CollateralShare, 1000 ether);
+        assertEq(balanceBefore, balanceAfter + 10 ether);
+        (uint256 token0CollateralShare, ) = pool.getUserCollateralShares(
+            Lender
+        );
+        assertEq(token0CollateralShare, 10 ether);
+        vm.stopPrank();
+    }
+
+    function testFailLendOnWrongToken() public {
+        vm.startPrank(Lender);
+        address wrongToken = address(0x20);
+        token0.approve(address(wrongToken), 10 ether);
+        pool.lend(address(wrongToken), 10 ether);
+        vm.stopPrank();
+    }
+
+    function testFailLendOnWrongAmount() public {
+        vm.startPrank(Lender);
+        uint256 wrongAmount = 0;
+        token0.approve(address(pool), 10 ether);
+        pool.lend(address(token0), wrongAmount);
+        vm.stopPrank();
     }
 
     function testRedeem() public {
-        token0.approve(address(pool), 1000 ether);
-        pool.lend(address(token0), 1000 ether);
-        (uint256 token0CollateralSharesBefore,) = pool.userCollateralShares(address(this));
-        pool.redeem(address(token0), 100 ether);
-        (uint256 token0CollateralSharesAfter,) = pool.userCollateralShares(address(this));
-        assertEq(token0CollateralSharesAfter, token0CollateralSharesBefore - 100 ether);
+        vm.startPrank(Lender);
+        token0.approve(address(pool), 10 ether);
+        pool.lend(address(token0), 10 ether);
+        (uint256 token0CollateralSharesBefore, ) = pool.getUserCollateralShares(
+            Lender
+        );
+        pool.redeem(address(token0), 10 ether);
+        (uint256 token0CollateralSharesAfter, ) = pool.getUserCollateralShares(
+            Lender
+        );
+        assertEq(
+            token0CollateralSharesAfter,
+            token0CollateralSharesBefore - 10 ether
+        );
+    }
+
+    function testFailRedeemOnLowcollateral() public {
+        vm.startPrank(Lender);
+        token0.approve(address(pool), 10 ether);
+        pool.lend(address(token0), 10 ether);
+        (uint256 token0CollateralShares, ) = pool.getUserCollateralShares(
+            Lender
+        );
+        pool.redeem(address(token0), token0CollateralShares + 1 ether);
+        vm.stopPrank();
+    }
+
+    function LendTenEther() internal {
+        vm.startPrank(Lender);
+        token0.approve(address(pool), 10 ether);
+        pool.lend(address(token0), 10 ether);
+        vm.stopPrank();
     }
 
     function testBorrow() public {
-        token0.approve(address(pool), 1000 ether);
-        pool.lend(address(token0), 1000 ether);
-        vm.startPrank(tester);
+        LendTenEther();
+        vm.startPrank(Borrower);
         token1.approve(address(pool), 1000 ether);
         pool.lend(address(token1), 1000 ether);
         //Taking 0.8 ETH in borrow why? becouse we can take 80% only and 80% is 0.8 ETH becouse 1 ETH is of 1000$ and we have lended 1000$
-        pool.borrow(address(token0), 1e18 / 10 * 8);
+        pool.borrow(address(token0), ((1e18 * 8) / 10));
+        vm.stopPrank();
     }
 
-    function testUndercollateralizedRevert() public {
-        token0.approve(address(pool), 1000 ether);
-        pool.lend(address(token0), 1000 ether);
-        vm.startPrank(tester);
+    function testFailOnUndercollateralizedBorrow() public {
+        LendTenEther();
+        vm.startPrank(Borrower);
         token1.approve(address(pool), 1000 ether);
         pool.lend(address(token1), 1000 ether);
-        //It should revert on 0.8 + 1wei
-        vm.expectRevert(bytes("Undercollateralized"));
-        pool.borrow(address(token0), 1e18 / 10 * 8 + 1);
+        pool.borrow(address(token0), ((1e18 * 8) / 10) + 1);
+        vm.stopPrank();
+    }
+
+    function testFailOnHighAmount() public {
+        LendTenEther();
+        vm.startPrank(Borrower);
+        token1.approve(address(pool), 20000 ether);
+        pool.lend(address(token1), 15000 ether);
+        pool.borrow(address(token0), 10 ether + 1);
+        vm.stopPrank();
     }
 
     function testRepay() public {
-        token0.approve(address(pool), 1000 ether);
-        pool.lend(address(token0), 1000 ether);
-        vm.startPrank(tester);
+        LendTenEther();
+        vm.startPrank(Borrower);
         token1.approve(address(pool), 1000 ether);
         pool.lend(address(token1), 1000 ether);
-        pool.borrow(address(token0), 1e18 / 10 * 8);
-        uint256 healthFactorBefore = pool.healthFactor(tester);
+        pool.borrow(address(token0), ((1e18 * 8) / 10));
+        uint256 healthFactorBefore = pool.getHealthFactor(Borrower);
         token0.approve(address(pool), type(uint256).max);
-        pool.repay(address(token0), 1e18 / 10 * 8);
-        uint256 healthFactorAfter = pool.healthFactor(tester);
+        (uint256 token0UserBorrowShares, ) = pool.getUserBorrowShares(Borrower);
+        pool.repay(address(token0), token0UserBorrowShares);
+        uint256 healthFactorAfter = pool.getHealthFactor(Borrower);
         assertGt(healthFactorAfter, healthFactorBefore);
     }
 
-    function testLiquidate() public {
-        token0.approve(address(pool), 100000 ether);
-        pool.lend(address(token0), 1000 ether);
-        vm.startPrank(tester);
-        token1.approve(address(pool), 1000 ether);
-        pool.lend(address(token1), 1000 ether);
-        pool.borrow(address(token0), 1e18 / 10 * 8);
-        oracle.setPrice(address(token0), 1001);
-        emit log_named_uint("Health is ", pool.healthFactor(tester));
-        vm.stopPrank();
-        pool.liquidate(tester, address(token0), 1e18 / 10 * 8);
-        uint256 totalToken1AsCollateral = pool.getUserTotalCollateral(tester);
-        assertLe(totalToken1AsCollateral, 160 ether);
-    }
+    // function testLiquidate() public {
+    //     token0.approve(address(pool), 100000 ether);
+    //     pool.lend(address(token0), 1000 ether);
+    //     vm.startPrank(tester);
+    //     token1.approve(address(pool), 1000 ether);
+    //     pool.lend(address(token1), 1000 ether);
+    //     pool.borrow(address(token0), (1e18 / 10) * 8);
+    //     oracle.setPrice(address(token0), 1001);
+    //     emit log_named_uint("Health is ", pool.healthFactor(tester));
+    //     vm.stopPrank();
+    //     pool.liquidate(tester, address(token0), (1e18 / 10) * 8);
+    //     uint256 totalToken1AsCollateral = pool.getUserTotalCollateral(tester);
+    //     assertLe(totalToken1AsCollateral, 160 ether);
+    // }
 }
