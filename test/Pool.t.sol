@@ -18,7 +18,6 @@ contract PoolTest is Test {
     address Owner = address(0x1);
     address Lender = address(0x2);
     address Borrower = address(0x3);
-    // address Borrower = address(0x3);
 
     struct UserData {
         uint128 collateralBalance;
@@ -31,15 +30,10 @@ contract PoolTest is Test {
         token1 = new ERC20Mock("Dai", "DAI", 100_000 ether);
         address[] memory tokens = new address[](2);
         uint256[] memory prices = new uint[](2);
-        for (uint256 i = 0; i < 2; i++) {
-            if (i == 0) {
-                tokens[i] = address(token0);
-                prices[i] = 1000;
-            } else {
-                tokens[i] = address(token1);
-                prices[i] = 1;
-            }
-        }
+        tokens[0] = address(token0);
+        prices[0] = 1000;
+        tokens[1] = address(token1);
+        prices[1] = 1;
         oracle = new Oracle(tokens, prices);
         pool = new Pool(address(token0), address(token1), address(oracle));
         token0.transfer(Lender, 10 ether);
@@ -154,18 +148,36 @@ contract PoolTest is Test {
         assertGt(healthFactorAfter, healthFactorBefore);
     }
 
-    // function testLiquidate() public {
-    //     token0.approve(address(pool), 100000 ether);
-    //     pool.lend(address(token0), 1000 ether);
-    //     vm.startPrank(tester);
-    //     token1.approve(address(pool), 1000 ether);
-    //     pool.lend(address(token1), 1000 ether);
-    //     pool.borrow(address(token0), (1e18 / 10) * 8);
-    //     oracle.setPrice(address(token0), 1001);
-    //     emit log_named_uint("Health is ", pool.healthFactor(tester));
-    //     vm.stopPrank();
-    //     pool.liquidate(tester, address(token0), (1e18 / 10) * 8);
-    //     uint256 totalToken1AsCollateral = pool.getUserTotalCollateral(tester);
-    //     assertLe(totalToken1AsCollateral, 160 ether);
-    // }
+    function testLiquidate() public {
+        LendTenEther();
+        vm.startPrank(Borrower);
+        token1.approve(address(pool), 1000 ether);
+        pool.lend(address(token1), 1000 ether);
+        pool.borrow(address(token0), ((1e18 * 8) / 10));
+        oracle.setPrice(address(token0), 1001);
+        vm.stopPrank();
+        vm.startPrank(Owner);
+        token0.approve(address(pool), 10 ether);
+        pool.liquidate(Borrower, address(token0), ((1e18 * 8) / 10));
+        (, uint256 token1CollateralShares) = pool.getUserCollateralShares(
+            Borrower
+        );
+        //Share will be less than 160 because actual of price of USDC W.R.T ETH
+        assertLe(token1CollateralShares, 160 ether);
+    }
+
+    function testAccrue() public {
+        vm.roll(0);
+        LendTenEther();
+        vm.startPrank(Borrower);
+        token1.approve(address(pool), 1000 ether);
+        pool.lend(address(token1), 1000 ether);
+        pool.borrow(address(token0), ((1e18 * 8) / 10));
+        vm.stopPrank();
+        uint256 inUsdcBefore = pool.getUserTotalCollateral(Lender);
+        vm.roll(2628000);
+        pool.accrueInterest();
+        uint256 inUsdcAfter = pool.getUserTotalCollateral(Lender);
+        assertGt(inUsdcAfter, inUsdcBefore);
+    }
 }

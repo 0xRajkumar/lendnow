@@ -5,6 +5,8 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "forge-std/console.sol";
 import "./Oracle.sol";
 
+// import "forge-std/console2.sol";
+
 contract Pool {
     /**
      * VARIABLES
@@ -84,7 +86,7 @@ contract Pool {
     function lend(
         address token,
         uint256 amount
-    ) external tokenExist(token) notZero(amount) {
+    ) external tokenExist(token) notZero(amount) returns (uint256) {
         accrueInterest();
         TokenData storage tokenData = (token == token0)
             ? token0Data
@@ -113,12 +115,13 @@ contract Pool {
                 userData.token1CollateralShare +
                 uint128(inShare);
         }
+        return inShare;
     }
 
     function redeem(
         address token,
         uint256 shareAmount
-    ) external tokenExist(token) notZero(shareAmount) {
+    ) external tokenExist(token) notZero(shareAmount) returns (uint256) {
         accrueInterest();
         UserData storage userData = users[msg.sender];
         if (token == token0) {
@@ -162,12 +165,13 @@ contract Pool {
             getHealthFactor(msg.sender) >= MIN_HEALTH_FACTOR,
             "Undercollateralized"
         );
+        return amount;
     }
 
     function borrow(
         address token,
         uint256 amount
-    ) external tokenExist(token) notZero(amount) {
+    ) external tokenExist(token) notZero(amount) returns (bool) {
         accrueInterest();
         TokenData storage tokenData = (token == token0)
             ? token0Data
@@ -182,9 +186,12 @@ contract Pool {
         tokenData.totalBorrow.amount =
             tokenData.totalBorrow.amount +
             uint128(amount);
+        tokenData.totalCollateral.amount =
+            tokenData.totalCollateral.amount -
+            uint128(amount);
         tokenData.totalBorrow.shares =
             tokenData.totalBorrow.shares +
-            uint128(amount);
+            uint128(inShare);
         if (token == token0) {
             userData.token0BorrowShare =
                 userData.token0BorrowShare +
@@ -199,12 +206,13 @@ contract Pool {
             "Undercollateralized"
         );
         IERC20(token).transfer(msg.sender, amount);
+        return true;
     }
 
     function repay(
         address token,
         uint256 shareAmount
-    ) external tokenExist(token) notZero(shareAmount) {
+    ) external tokenExist(token) notZero(shareAmount) returns (bool) {
         accrueInterest();
         UserData storage userData = users[msg.sender];
         if (token == token0) {
@@ -243,17 +251,17 @@ contract Pool {
                 userData.token1BorrowShare -
                 uint128(shareAmount);
         }
+        return true;
     }
 
     function liquidate(
         address to,
         address debtAsset,
         uint256 debtToCover
-    ) external tokenExist(debtAsset) notZero(debtToCover) {
+    ) external tokenExist(debtAsset) notZero(debtToCover) returns (bool) {
         accrueInterest();
         require(getHealthFactor(to) < MIN_HEALTH_FACTOR, "Borrower is solvant");
         UserData storage userData = users[to];
-
         if (token0 == debtAsset) {
             uint256 shares;
             uint256 userDebtAmount = toAmount(
@@ -265,7 +273,7 @@ contract Pool {
                 debtToCover = userDebtAmount;
                 shares = userData.token0BorrowShare;
             } else {
-                uint256 shares = toShares(
+                shares = toShares(
                     token0Data.totalBorrow.shares,
                     token0Data.totalBorrow.amount,
                     debtToCover
@@ -306,7 +314,7 @@ contract Pool {
                 debtToCover = userDebtAmount;
                 shares = userData.token1BorrowShare;
             } else {
-                uint256 shares = toShares(
+                shares = toShares(
                     token1Data.totalBorrow.shares,
                     token1Data.totalBorrow.amount,
                     debtToCover
@@ -337,6 +345,7 @@ contract Pool {
             token0Data.totalCollateral.amount -= uint128(token0Amount);
             IERC20(token0).transfer(msg.sender, token0Amount);
         }
+        return true;
     }
 
     function accrueInterest() public {
@@ -428,24 +437,22 @@ contract Pool {
         uint256 totalBorrow,
         uint256 totalCollateral
     ) public pure returns (uint256) {
-        uint256 utilizationRate;
-        if (totalBorrow > 0) {
-            utilizationRate = (totalBorrow * 1 ether) / totalCollateral;
-        }
+        //From where we will pay interest? someone has to borrow right!
+        if (totalBorrow == 0) return 0;
+        uint256 utilizationRate = (totalBorrow * 1e18) / totalCollateral;
         //Optimal Utilization is one
-        //Base Rate is 10
+        //Base Rate is 10 10817
         //30 is Depend on utilization if it's 1 then it will 30 and total will be 40
-        uint256 apy = 10 + utilizationRate * 30;
-        //15 SECONDS = 1 Block
-        //1 Year = 2102400 Block
-        return apy / 2102400;
+        uint256 apy = (10 * 10 ** 18) + (utilizationRate * 30);
+        //12 SECONDS = 1 Block
+        //1 Year = 2628000 Block
+        return apy / 2628000;
     }
 
     function getUserTotalCollateral(
         address user
     ) public view returns (uint256 totalInDai) {
         UserData memory userData = users[user];
-
         uint256 totalToken0Amount = token0Data.totalCollateral.amount +
             token0Data.totalBorrow.amount;
         uint256 token0Amount = toAmount(
